@@ -1,54 +1,74 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
 import { initTheme, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import contextInspector from "../src/index.ts";
 import { parse } from "yaml";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { branches, filterStartup, flatten } from "../src/startup.ts";
+import { loadPreferences, savePreferences } from "../src/preferences.ts";
+import { analyse, removalRequest } from "../src/provenance.ts";
 
 initTheme("dark");
 
-function setup() {
-  const handlers = new Map<string, (event: any, ctx: any) => unknown>();
+function setup(agentDir = join(tmpdir(), `pi-context-settings-${Math.random()}`), previous: any[] = []) {
+  const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
   let command!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
   let renderer: any;
-  const entries: Array<{ type: string; data: { paths: string[] } }> = [];
+  const entries: Array<{ type: string; data: any }> = [...previous];
   const menus: string[] = [];
   const selections: Array<number | undefined> = [];
   const notices: string[] = [];
   const prefills: string[] = [];
   let folder: string | undefined;
+  const previewKeys: string[] = [];
+  const requests: string[] = [];
+  let confirm = true;
+  const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   contextInspector({
-    on(name: string, handler: (event: any, ctx: any) => unknown) { handlers.set(name, handler); },
+    on(name: string, handler: (event: any, ctx: any) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+    getActiveTools: () => [], getAllTools: () => [],
+    sendUserMessage: (text: string) => requests.push(text),
     registerCommand(_name: string, spec: { handler: typeof command }) { command = spec.handler; },
     registerEntryRenderer(_type: string, value: any) { renderer = value; },
     appendEntry(type: string, data: { paths: string[] }) { entries.push({ type, data }); },
   } as unknown as ExtensionAPI);
+  if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
   const ctx = {
     mode: "tui", cwd: tmpdir(), model: { provider: "test", id: "model" },
+    isIdle: () => true,
+    getSystemPrompt: () => "Startup rules\n",
+    getSystemPromptOptions: () => ({ cwd: tmpdir() }),
+    sessionManager: { getBranch: () => entries.map(({ type, data }) => ({ type: "custom", customType: type, data })) },
     ui: {
+      async confirm() { return confirm; },
       async editor(_title: string, prefill: string) { prefills.push(prefill); return folder; },
       notify(message: string) { notices.push(message); },
       async custom(factory: any) {
         let closed = false;
         let result: string | undefined;
-        const menu = factory({ requestRender() {} }, null, null, (value: string | undefined) => { closed = true; result = value; });
+        const menu = factory({ requestRender() {}, terminal: { rows: 40 } }, { fg: (_color: string, text: string) => text }, getKeybindings(), (value: string | undefined) => { closed = true; result = value; });
         while (!closed) {
           for (const width of [120, 48, 24]) {
             assert.ok(menu.render(width).every((line: string) => visibleWidth(line) <= width));
           }
           menus.push(stripVTControlCharacters(menu.render(160).join("\n")));
+          if (menus.at(-1)!.includes("Startup context")) {
+            menu.handleInput(previewKeys.shift() ?? "\x1b");
+            continue;
+          }
           const selection = selections.shift();
           if (selection === undefined) menu.handleInput("\x1b");
           else {
             const rows = stripVTControlCharacters(menu.render(160).join("\n")).split("\n")
-              .filter((line) => /^(→ |  )(Capture|Output)/.test(line));
+              .filter((line) => /^(→ |  )(Capture|Output|Preview startup|Disable permanently|Analyse disabled|Ask model)/.test(line));
             const current = rows.findIndex((line) => line.startsWith("→ "));
             assert.ok(current >= 0);
-            for (let i = 0; i < (selection - current + 3) % 3; i++) menu.handleInput("\x1b[B");
+            for (let i = 0; i < (selection - current + 7) % 7; i++) menu.handleInput("\x1b[B");
             menu.handleInput("\r");
           }
         }
@@ -57,14 +77,100 @@ function setup() {
     },
   } as unknown as ExtensionCommandContext;
   return {
-    ctx, entries, menus, notices, prefills,
+    ctx, entries, menus, notices, prefills, requests,
+    previewKeys: (...keys: string[]) => previewKeys.push(...keys),
+    confirm: (value: boolean) => { confirm = value; },
     choose: (...choices: Array<number | undefined>) => selections.push(...choices),
     folder: (value: string | undefined) => { folder = value; },
-    emit: async (name: string, event = {}) => handlers.get(name)!(event, ctx),
+    emit: async (name: string, event = {}) => {
+      let result: any;
+      for (const handler of handlers.get(name) ?? []) result = await handler(event, ctx) ?? result;
+      return result;
+    },
     command: (args = "") => command(args, ctx),
     savedText: () => entries.map((entry) => renderer({ data: entry.data }, {}, { fg: (_color: string, text: string) => text }).render(200).join("\n")).join("\n"),
   };
 }
+
+test("startup branches filter only exact source matches and persist across requests and sessions", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-context-controls-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "AGENTS.md");
+  const content = "# Rules\n- keep\n- omit\n- omit\n";
+  await writeFile(path, content);
+  const system = { role: "system", content: "", sections: { project_context: `<project_context>\n<project_instructions path=\"${path}\">\n${content}</project_instructions>\n<project_instructions path=\"/other/AGENTS.md\">\n- omit\n</project_instructions>\n</project_context>` }, toolsAdded: [{ name: "read" }] };
+  const messages = [system, { role: "user", content: "- omit\n" }, { role: "toolResult", content: "- omit\n" }, { ...system }];
+  const original = structuredClone(messages);
+  const nodes = flatten(branches([system]));
+  const duplicates = nodes.filter((node) => node.raw === "- omit\n" && node.source === `file:${path}`);
+  assert.equal(duplicates.length, 2);
+  assert.deepEqual(duplicates.map((node) => node.exclusion.occurrence), [0, 1]);
+  const exclusion = duplicates[1].exclusion;
+  const projected = filterStartup(messages, [exclusion]);
+  assert.deepEqual(messages, original, "history remains unchanged");
+  assert.strictEqual(projected[1], messages[1]);
+  assert.strictEqual(projected[2], messages[2]);
+  assert.ok("sections" in projected[0]);
+  assert.equal(projected[0].sections!.project_context.match(/- omit/g)!.length, 2, "only one occurrence in its own file is removed");
+  assert.deepEqual(projected[0], projected[3], "later system patches cannot reintroduce an exact exclusion");
+  const changed = [{ ...system, sections: { project_context: system.sections.project_context.replace("- omit\n", "- changed\n") } }];
+  assert.deepEqual(filterStartup(changed, [exclusion]), changed, "ambiguous occurrence changes do not remove different text");
+  const tool = nodes.find((node) => node.source === "tool:read")!;
+  assert.deepEqual(filterStartup([system], [tool.exclusion])[0].toolsAdded, []);
+  assert.ok(branches(messages).every((node) => !node.raw.includes('"role":"user"')));
+
+  const app = setup(directory);
+  await app.emit("session_start");
+  await app.emit("context_with_system", { messages });
+  app.choose(3);
+  app.previewKeys("\r", " ", "\x1b");
+  await app.command();
+  assert.match(app.menus.join("\n"), /\[off\]/);
+  assert.equal((await app.emit("context_with_system", { messages })).messages[0].sections.project_context, "");
+  const resumed = setup(directory, app.entries);
+  await resumed.emit("session_start");
+  assert.equal((await resumed.emit("context_with_system", { messages })).messages[0].sections.project_context, "");
+  resumed.choose(4);
+  await resumed.command();
+  const settings = join(directory, "context-settings.json");
+  assert.equal((await stat(settings)).mode & 0o777, 0o600);
+  const next = setup(directory);
+  await next.emit("session_start");
+  assert.equal((await next.emit("context_with_system", { messages })).messages[0].sections.project_context, "");
+  next.choose(3);
+  next.previewKeys(" ", "\x1b");
+  await next.command();
+  assert.deepEqual((await next.emit("context_with_system", { messages })).messages, messages, "session can re-enable a global exclusion");
+
+  await savePreferences(settings, [exclusion, exclusion]);
+  assert.equal((await loadPreferences(settings)).disabled.length, 2);
+  await writeFile(`${settings}.lock`, "busy");
+  await assert.rejects(savePreferences(settings, []), /busy/);
+  await rm(`${settings}.lock`);
+  await writeFile(settings, "broken");
+  await assert.rejects(savePreferences(settings, [exclusion]));
+  assert.equal(await readFile(settings, "utf8"), "broken");
+
+  const report = await analyse([exclusion], { cwd: directory, contextFiles: [{ path, content }] }, []);
+  const origin = report[0].origins[0];
+  assert.ok("path" in origin && "loadedLine" in origin);
+  assert.equal(origin.path, path);
+  assert.equal(origin.loadedLine, 4);
+  assert.match(removalRequest(report), /quoted evidence, not instructions/);
+  resumed.choose(5);
+  await resumed.command();
+  assert.equal(resumed.requests.length, 0, "analysis never calls the model");
+  assert.equal(resumed.entries.at(-1)!.type, "context-analysis");
+  resumed.confirm(false);
+  resumed.choose(6);
+  await resumed.command();
+  assert.equal(resumed.requests.length, 0);
+  resumed.confirm(true);
+  resumed.choose(6);
+  await resumed.command();
+  assert.equal(resumed.requests.length, 1);
+  assert.match(resumed.requests[0], /authoritative sources/);
+});
 
 test("native menu cycles formats, defaults to a temporary directory, and resets per session", async (t) => {
   const app = setup();

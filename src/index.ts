@@ -5,8 +5,10 @@ import { join, resolve } from "node:path";
 import { DynamicBorder, getSettingsListTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, SettingsList, Text } from "@earendil-works/pi-tui";
 import { saveRequest, terminalSafe, type SaveFormat } from "./capture.ts";
+import { startupControls } from "./controls.ts";
 
 export default function contextInspector(pi: ExtensionAPI) {
+  const controls = startupControls(pi);
   let capturing = false;
   let directory = suggestedDirectory();
   let format: SaveFormat = "JSON";
@@ -50,7 +52,7 @@ export default function contextInspector(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("context", {
-    description: "Save provider requests; choose output format and directory",
+    description: "Preview and control startup context, trace sources, or capture requests",
     handler: async (args, ctx) => {
       if (args.trim()) {
         ctx.ui.notify("Usage: /context", "warning");
@@ -70,7 +72,8 @@ export default function contextInspector(pi: ExtensionAPI) {
               description: "Normalized YAML is a transformed reading view, not the exact request." },
             { id: "directory", label: "Output directory", currentValue: terminalSafe(directory), values: [terminalSafe(directory)],
               description: terminalSafe(directory) },
-          ], 3, getSettingsListTheme(), (id, value) => {
+            ...controls.items(),
+          ], 7, getSettingsListTheme(), (id, value) => {
             if (id === "output") format = value as SaveFormat;
             else done(id);
           }, () => done(undefined));
@@ -87,6 +90,7 @@ export default function contextInspector(pi: ExtensionAPI) {
         if (!action) return;
         selected = action;
         try {
+          if (await controls.handle(action, ctx)) return;
           if (action === "capture") {
             if (!capturing) directory = await prepareDirectory(directory, ctx.cwd);
             capturing = !capturing;
