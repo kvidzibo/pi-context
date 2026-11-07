@@ -30,29 +30,47 @@ function positions(text: string, part: string): number[] {
   return result;
 }
 
+// Keep fence spans opaque in both the main scan and structural lookaheads.
+function fenceEnds(lines: string[]): Map<number, number> {
+  const ends = new Map<number, number>();
+  for (let i = 0; i < lines.length; i++) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(lines[i]);
+    if (!marker) continue;
+    const close = new RegExp(`^ {0,3}${marker[1][0]}{${marker[1].length},}\\s*$`);
+    let end = i + 1;
+    while (end < lines.length && !close.test(lines[end++])) { /* retain the entire fence */ }
+    ends.set(i, end);
+    i = end - 1;
+  }
+  return ends;
+}
+
 /** Source-preserving reading tree. No YAML is ever converted back into instructions. */
 export function textBranch(raw: string, source = "prompt", label = "system", depth = 0): Branch {
   const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const fences = fenceEnds(lines);
   const children: Branch[] = [];
   for (let i = 0; i < lines.length && depth < 64;) {
     const start = i;
     const line = lines[i].trim();
-    const open = /^<([\w:.-]+)(?:\s[^<>]*)?>$/.exec(line);
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-    const fence = /^(`{3,}|~{3,})/.exec(line);
+    const structural = /^ {0,3}\S/.test(lines[i]);
+    const open = structural && /^<([\w:.-]+)(?:\s[^<>]*)?>$/.exec(line);
+    const heading = structural && /^(#{1,6})\s+(.+)$/.exec(line);
+    const fence = fences.get(i);
     let end = i + 1;
     let name = `text: ${quote(lines[i])}`;
     let childSource = source;
     if (fence) {
-      while (end < lines.length) {
-        const close = new RegExp(`^${fence[1][0]}{${fence[1].length},}\\s*$`).test(lines[end++].trim());
-        if (close) break;
-      }
+      end = fence;
       name = "code: |";
     } else if (open) {
       let balance = 1;
       while (end < lines.length && balance) {
-        const candidate = lines[end++].trim();
+        const fenceEnd = fences.get(end);
+        if (fenceEnd !== undefined) { end = fenceEnd; continue; }
+        const candidateLine = lines[end++];
+        if (!/^ {0,3}\S/.test(candidateLine)) continue;
+        const candidate = candidateLine.trim();
         if (candidate === `</${open[1]}>`) balance--;
         else if (new RegExp(`^<${open[1]}(?:\\s[^<>]*)?>$`).test(candidate)) balance++;
       }
@@ -64,7 +82,9 @@ export function textBranch(raw: string, source = "prompt", label = "system", dep
       }
     } else if (heading) {
       while (end < lines.length) {
-        const next = /^(#{1,6})\s+/.exec(lines[end].trim());
+        const fenceEnd = fences.get(end);
+        if (fenceEnd !== undefined) { end = fenceEnd; continue; }
+        const next = /^ {0,3}(#{1,6})\s+/.exec(lines[end]);
         if (next && next[1].length <= heading[1].length) break;
         end++;
       }

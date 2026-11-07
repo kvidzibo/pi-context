@@ -38,9 +38,14 @@ Use the configured selection keys (normally ↑/↓ and Enter or Space); Esc clo
 
 ### Startup preview and exclusions
 
-The YAML-style tree shows initial system instructions, tool declarations, and extension-message text before the first user message—not conversation history. Enter or ←/→ expands/minimises; Space toggles a branch; **v** opens its full normalized YAML; Esc goes back. Parent exclusions cover descendants. Tool declarations are selectable only as whole tools; their schemas are read-only.
+The source/section tree shows initial system instructions, tool declarations, and extension-message text before the first user message—not conversation history. **On / mixed / off** shows whether a branch is included, has disabled descendants, or is excluded. Parent exclusions cover descendants; enable the parent before changing an inherited exclusion. Tool declarations are selectable only as whole tools; their schemas are read-only. Code examples stay literal and do not create heading or source boundaries.
 
-Before the first request, the preview is **provisional**: extensions and tool-loadout preparation can still change it. The first request records the prefix before the first user message. This snapshot remains the preview for that session. Later chat messages, tool results, and images are never filtered.
+- **Enter** expands/collapses a branch, or reads a leaf. **→** opens a branch or moves into it; **←** collapses it or moves to its parent. Configured Pi tree-fold keys also work.
+- **Space** disables/restores the selected branch. Restoring a parent preserves its individually disabled descendants.
+- **v** reads the full original branch, with its source and breadcrumb. **Tab** switches between original text and normalized YAML. Both are read-only views of the original snapshot, **including disabled text**, not the filtered request.
+- In the reader, use the configured selection/page keys to scroll, **Home/End** to jump, and **Esc** to return to the same tree selection. Escape from the tree returns to settings.
+
+The preview header distinguishes **Provisional** from **Captured snapshot**. Before the first request, the preview is provisional: extensions and tool-loadout preparation can still change it. The first request records the prefix before the first user message. This snapshot remains the preview for that session. Later chat messages, tool results, and images are never filtered.
 
 Exclusions and expansion state persist in the active session branch across `/reload`, resume, and forks. Filtering runs on each normal model call, including tool follow-ups, and also removes exact matches from later system patches. It does not rewrite stored history. Source scope, exact text, and duplicate occurrence/count must match; changed or ambiguous branches remain enabled. **Analyse disabled lines** identifies exclusions that no longer match the startup snapshot.
 

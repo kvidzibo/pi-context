@@ -81,7 +81,7 @@ export function startupControls(pi: ExtensionAPI) {
   return {
     items(): SettingItem[] {
       return [
-        { id: "preview", label: "Preview startup context", currentValue: `${disabled.length} disabled`, values: ["open"], description: "Expand/minimise branches; disable instructions for future requests. Before the first request, this is a provisional preview." },
+        { id: "preview", label: "Preview startup context", currentValue: `${disabled.length} disabled`, values: ["open"], description: "Browse sources and sections, read original text or normalized YAML, and disable branches for future requests." },
         { id: "permanent", label: "Disable permanently", currentValue: "save", values: ["save"], description: "Export exact disabled matches to private context settings for other sessions." },
         { id: "analyse", label: "Analyse disabled lines", currentValue: "print sources", values: ["print sources"], description: "Print known source files and line numbers without calling a model." },
         { id: "remove", label: "Ask model to remove", currentValue: "confirm…", values: ["confirm…"], description: "Ask the model to edit verified source files. Disabled text is included as quoted evidence." },
@@ -93,7 +93,7 @@ export function startupControls(pi: ExtensionAPI) {
       try {
         const roots = branches(initial(ctx));
         if (action === "preview") {
-          await preview(ctx, roots, disabled, expanded, persist);
+          await preview(ctx, roots, disabled, expanded, persist, snapshot !== undefined);
           return false;
         }
         if (!disabled.length) { ctx.ui.notify("No disabled branches.", "info"); return false; }
