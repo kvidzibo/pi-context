@@ -31,15 +31,18 @@ function positions(text: string, part: string): number[] {
 }
 
 // Keep fence spans opaque in both the main scan and structural lookaheads.
-function fenceEnds(lines: string[]): Map<number, number> {
-  const ends = new Map<number, number>();
+function fenceEnds(lines: string[]): Map<number, { end: number; closed: boolean }> {
+  const ends = new Map<number, { end: number; closed: boolean }>();
   for (let i = 0; i < lines.length; i++) {
     const marker = /^ {0,3}(`{3,}|~{3,})/.exec(lines[i]);
     if (!marker) continue;
     const close = new RegExp(`^ {0,3}${marker[1][0]}{${marker[1].length},}\\s*$`);
     let end = i + 1;
-    while (end < lines.length && !close.test(lines[end++])) { /* retain the entire fence */ }
-    ends.set(i, end);
+    let closed = false;
+    while (end < lines.length) {
+      if (close.test(lines[end++])) { closed = true; break; }
+    }
+    ends.set(i, { end, closed });
     i = end - 1;
   }
   return ends;
@@ -49,8 +52,14 @@ function fenceEnds(lines: string[]): Map<number, number> {
 export function textBranch(raw: string, source = "prompt", label = "system", depth = 0): Branch {
   const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   const fences = fenceEnds(lines);
+  // A fence that crosses a file close/open pair is ambiguous: it may be a
+  // literal example, or an unclosed fence borrowing a terminator from the next
+  // file. Without authoritative offsets, keep this range whole rather than
+  // offer exclusions under a guessed file/heading identity.
+  const ambiguous = [...fences].some(([start, fence]) => fence.closed &&
+    /^ {0,3}<\/project_instructions>\s*\n[\s\S]*?^ {0,3}<project_instructions\b/m.test(lines.slice(start + 1, fence.end - 1).join("")));
   const children: Branch[] = [];
-  for (let i = 0; i < lines.length && depth < 64;) {
+  for (let i = 0; i < lines.length && depth < 64 && !ambiguous;) {
     const start = i;
     const line = lines[i].trim();
     const structural = /^ {0,3}\S/.test(lines[i]);
@@ -61,13 +70,15 @@ export function textBranch(raw: string, source = "prompt", label = "system", dep
     let name = `text: ${quote(lines[i])}`;
     let childSource = source;
     if (fence) {
-      end = fence;
+      end = fence.end;
       name = "code: |";
     } else if (open) {
       let balance = 1;
       while (end < lines.length && balance) {
-        const fenceEnd = fences.get(end);
-        if (fenceEnd !== undefined) { end = fenceEnd; continue; }
+        const fence = fences.get(end);
+        // An unterminated example cannot hide the enclosing source delimiter.
+        // Its body is parsed again within that wrapper's bounded raw range.
+        if (fence?.closed) { end = fence.end; continue; }
         const candidateLine = lines[end++];
         if (!/^ {0,3}\S/.test(candidateLine)) continue;
         const candidate = candidateLine.trim();
@@ -82,8 +93,8 @@ export function textBranch(raw: string, source = "prompt", label = "system", dep
       }
     } else if (heading) {
       while (end < lines.length) {
-        const fenceEnd = fences.get(end);
-        if (fenceEnd !== undefined) { end = fenceEnd; continue; }
+        const fence = fences.get(end);
+        if (fence) { end = fence.end; continue; }
         const next = /^ {0,3}(#{1,6})\s+/.exec(lines[end]);
         if (next && next[1].length <= heading[1].length) break;
         end++;
@@ -107,6 +118,7 @@ export function textBranch(raw: string, source = "prompt", label = "system", dep
     }
     i = end;
   }
+  if (ambiguous) label = "Unsplit context (ambiguous source delimiters)";
   const root: Branch = children.length === 1 && children[0].raw === raw && children[0].source === source
     ? { ...children[0], label }
     : { id: "", label, raw, source, exclusion: { source, text: raw, occurrence: 0, count: 1 }, children };
