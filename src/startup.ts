@@ -30,29 +30,62 @@ function positions(text: string, part: string): number[] {
   return result;
 }
 
+// Keep fence spans opaque in both the main scan and structural lookaheads.
+function fenceEnds(lines: string[]): Map<number, { end: number; closed: boolean }> {
+  const ends = new Map<number, { end: number; closed: boolean }>();
+  for (let i = 0; i < lines.length; i++) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(lines[i]);
+    if (!marker) continue;
+    const close = new RegExp(`^ {0,3}${marker[1][0]}{${marker[1].length},}\\s*$`);
+    let end = i + 1;
+    let closed = false;
+    while (end < lines.length) {
+      if (close.test(lines[end++])) { closed = true; break; }
+    }
+    ends.set(i, { end, closed });
+    i = end - 1;
+  }
+  return ends;
+}
+
 /** Source-preserving reading tree. No YAML is ever converted back into instructions. */
 export function textBranch(raw: string, source = "prompt", label = "system", depth = 0): Branch {
   const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const fences = fenceEnds(lines);
+  // Missing terminators make source tags ambiguous (including literal opening
+  // tags that would change wrapper balance). A seemingly closed fence can also
+  // have borrowed its terminator from the next file. Keep either range whole;
+  // never offer granular exclusions under a guessed file/heading identity.
+  const ambiguous = [...fences].some(([start, fence]) => {
+    const body = lines.slice(start + 1, fence.closed ? fence.end - 1 : fence.end).join("");
+    return fence.closed
+      ? /^ {0,3}<\/project_instructions>\s*\n[\s\S]*?^ {0,3}<project_instructions\b/m.test(body)
+      : /^ {0,3}<\/?[\w:.-]+(?:\s[^<>]*)?>\s*$/m.test(body);
+  });
   const children: Branch[] = [];
-  for (let i = 0; i < lines.length && depth < 64;) {
+  for (let i = 0; i < lines.length && depth < 64 && !ambiguous;) {
     const start = i;
     const line = lines[i].trim();
-    const open = /^<([\w:.-]+)(?:\s[^<>]*)?>$/.exec(line);
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-    const fence = /^(`{3,}|~{3,})/.exec(line);
+    const structural = /^ {0,3}\S/.test(lines[i]);
+    const open = structural && /^<([\w:.-]+)(?:\s[^<>]*)?>$/.exec(line);
+    const heading = structural && /^(#{1,6})\s+(.+)$/.exec(line);
+    const fence = fences.get(i);
     let end = i + 1;
     let name = `text: ${quote(lines[i])}`;
     let childSource = source;
     if (fence) {
-      while (end < lines.length) {
-        const close = new RegExp(`^${fence[1][0]}{${fence[1].length},}\\s*$`).test(lines[end++].trim());
-        if (close) break;
-      }
+      end = fence.end;
       name = "code: |";
     } else if (open) {
       let balance = 1;
       while (end < lines.length && balance) {
-        const candidate = lines[end++].trim();
+        const fence = fences.get(end);
+        // An unterminated example cannot hide the enclosing source delimiter.
+        // Its body is parsed again within that wrapper's bounded raw range.
+        if (fence?.closed) { end = fence.end; continue; }
+        const candidateLine = lines[end++];
+        if (!/^ {0,3}\S/.test(candidateLine)) continue;
+        const candidate = candidateLine.trim();
         if (candidate === `</${open[1]}>`) balance--;
         else if (new RegExp(`^<${open[1]}(?:\\s[^<>]*)?>$`).test(candidate)) balance++;
       }
@@ -64,7 +97,9 @@ export function textBranch(raw: string, source = "prompt", label = "system", dep
       }
     } else if (heading) {
       while (end < lines.length) {
-        const next = /^(#{1,6})\s+/.exec(lines[end].trim());
+        const fence = fences.get(end);
+        if (fence) { end = fence.end; continue; }
+        const next = /^ {0,3}(#{1,6})\s+/.exec(lines[end]);
         if (next && next[1].length <= heading[1].length) break;
         end++;
       }
@@ -87,6 +122,7 @@ export function textBranch(raw: string, source = "prompt", label = "system", dep
     }
     i = end;
   }
+  if (ambiguous) label = "Unsplit context (ambiguous source delimiters)";
   const root: Branch = children.length === 1 && children[0].raw === raw && children[0].source === source
     ? { ...children[0], label }
     : { id: "", label, raw, source, exclusion: { source, text: raw, occurrence: 0, count: 1 }, children };
