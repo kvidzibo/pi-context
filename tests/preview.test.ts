@@ -58,7 +58,8 @@ test("preview exposes mixed/inherited states and reads full branches without cha
   assert.doesNotMatch(render(), /# Rules/);
   key("\x1b[F"); // End.
   assert.match(render(), /Instruction 44/);
-  assert.equal(key("\x1b[B"), render(), "scroll at end does not wrap to start");
+  const bottom = render();
+  assert.equal(key("\x1b[B"), bottom, "scroll at end does not wrap to start");
   terminal.rows = 24;
   render(48);
   render(24);

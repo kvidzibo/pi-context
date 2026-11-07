@@ -52,12 +52,16 @@ function fenceEnds(lines: string[]): Map<number, { end: number; closed: boolean 
 export function textBranch(raw: string, source = "prompt", label = "system", depth = 0): Branch {
   const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   const fences = fenceEnds(lines);
-  // A fence that crosses a file close/open pair is ambiguous: it may be a
-  // literal example, or an unclosed fence borrowing a terminator from the next
-  // file. Without authoritative offsets, keep this range whole rather than
-  // offer exclusions under a guessed file/heading identity.
-  const ambiguous = [...fences].some(([start, fence]) => fence.closed &&
-    /^ {0,3}<\/project_instructions>\s*\n[\s\S]*?^ {0,3}<project_instructions\b/m.test(lines.slice(start + 1, fence.end - 1).join("")));
+  // Missing terminators make source tags ambiguous (including literal opening
+  // tags that would change wrapper balance). A seemingly closed fence can also
+  // have borrowed its terminator from the next file. Keep either range whole;
+  // never offer granular exclusions under a guessed file/heading identity.
+  const ambiguous = [...fences].some(([start, fence]) => {
+    const body = lines.slice(start + 1, fence.closed ? fence.end - 1 : fence.end).join("");
+    return fence.closed
+      ? /^ {0,3}<\/project_instructions>\s*\n[\s\S]*?^ {0,3}<project_instructions\b/m.test(body)
+      : /^ {0,3}<\/?[\w:.-]+(?:\s[^<>]*)?>\s*$/m.test(body);
+  });
   const children: Branch[] = [];
   for (let i = 0; i < lines.length && depth < 64 && !ambiguous;) {
     const start = i;

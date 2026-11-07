@@ -73,28 +73,24 @@ test("startup tree boundaries and filtering keep code examples opaque", () => {
     }
   }
 
-  // A malformed example in one file must not hide that file's actual delimiter.
-  const aBody = "# A rules\n```sh\nUnclosed example\n";
-  const aOpen = '<project_instructions path="/a/AGENTS.md">\nIntroduction.\n';
+  // Malformed examples cannot borrow a terminator or change wrapper balance
+  // across files. Keep uncertain ranges whole, including literal tag examples.
+  const aOpen = '<project_instructions path="/a/AGENTS.md">\n';
   const aClose = "</project_instructions>\n";
   const b = '<project_instructions path="/b/AGENTS.md">\n# B rules\nKeep B.\n</project_instructions>\n';
-  const content = `<project_context>\n${aOpen}${aBody}${aClose}${b}</project_context>`;
-  const messages = [{ role: "system", content }, { role: "user", content }];
-  const nodes = flatten(branches(messages));
-  const aHeading = nodes.find((node) => node.label === 'heading: "A rules"')!;
-  assert.equal(aHeading.source, "file:/a/AGENTS.md");
-  assert.equal(aHeading.raw, aBody);
-  assert.ok(nodes.some((node) => node.source === "file:/b/AGENTS.md"));
-  const filtered = filterStartup(messages, [aHeading.exclusion]);
-  assert.equal(filtered[0].content, `<project_context>\n${aOpen}${aClose}${b}</project_context>`);
-  assert.strictEqual(filtered[1], messages[1]);
-
-  // A later file's closing fence is not proof that A's example was closed.
-  const fencedB = b.replace("Keep B.\n", "Keep B.\n```sh\nB example\n```\n");
-  const ambiguousMessages = [{ role: "system", content: aOpen + aBody + aClose + fencedB }];
-  const ambiguousNodes = flatten(branches(ambiguousMessages));
-  assert.equal(ambiguousNodes.length, 1);
-  assert.match(ambiguousNodes[0].label, /ambiguous source delimiters/);
-  assert.deepEqual(filterStartup(ambiguousMessages, [aHeading.exclusion]), ambiguousMessages,
-    "uncertain boundaries leave old granular exclusions unapplied rather than removing another file");
+  for (const literal of ["Unclosed example\n", '<project_instructions path="/example.md">\n']) {
+    for (const following of [b, b.replace("Keep B.\n", "Keep B.\n```sh\nB example\n```\n")]) {
+      const aBody = `# A rules\n\`\`\`xml\n${literal}`;
+      const content = aOpen + aBody + aClose + following;
+      const messages = [{ role: "system", content }, { role: "user", content }];
+      const nodes = flatten(branches(messages));
+      assert.equal(nodes.length, 1);
+      assert.equal(nodes[0].raw, content);
+      assert.match(nodes[0].label, /ambiguous source delimiters/);
+      // This was the unsafe heading exclusion produced by the old parser.
+      const unsafe = { source: "prompt", text: aBody + aClose + following, occurrence: 0, count: 1 };
+      assert.deepEqual(filterStartup(messages, [unsafe]), messages);
+      assert.strictEqual(filterStartup(messages, [nodes[0].exclusion])[1], messages[1]);
+    }
+  }
 });
