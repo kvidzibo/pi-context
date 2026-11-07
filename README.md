@@ -38,9 +38,9 @@ Use the configured selection keys (normally ↑/↓ and Enter or Space); Esc clo
 
 ### Startup preview and exclusions
 
-The YAML-style tree shows initial system instructions and tool declarations, not conversation history. Enter or ←/→ expands/minimises; Space toggles a branch; **v** opens its full normalized YAML; Esc goes back. Parent exclusions cover descendants. Tool declarations are selectable only as whole tools; their schemas are read-only.
+The YAML-style tree shows initial system instructions, tool declarations, and extension-message text before the first user message—not conversation history. Enter or ←/→ expands/minimises; Space toggles a branch; **v** opens its full normalized YAML; Esc goes back. Parent exclusions cover descendants. Tool declarations are selectable only as whole tools; their schemas are read-only.
 
-Before the first request, the preview is **provisional**: extensions and tool-loadout preparation can still change it. The first request records the system prefix before the first non-system message. This snapshot remains the preview for that session. Later chat messages and tool results are never included or filtered.
+Before the first request, the preview is **provisional**: extensions and tool-loadout preparation can still change it. The first request records the prefix before the first user message. This snapshot remains the preview for that session. Later chat messages, tool results, and images are never filtered.
 
 Exclusions and expansion state persist in the active session branch across `/reload`, resume, and forks. Filtering runs on each normal model call, including tool follow-ups, and also removes exact matches from later system patches. It does not rewrite stored history. Source scope, exact text, and duplicate occurrence/count must match; changed or ambiguous branches remain enabled. **Analyse disabled lines** identifies exclusions that no longer match the startup snapshot.
 

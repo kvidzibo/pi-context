@@ -52,7 +52,7 @@ export async function preview(ctx: ExtensionCommandContext, roots: Branch[], dis
       capturesViewportInput: true,
       render(width: number) {
         const nextHeight = Math.max(3, Math.min(12, tui.terminal.rows - 10));
-        if (height !== nextHeight) { height = nextHeight; rebuild(); }
+        if (height !== nextHeight) { height = nextHeight; detailWidth = 0; rebuild(); }
         if (detailText !== undefined) {
           if (!detail || detailWidth !== width) {
             const selectedLine = Number(detail?.getSelectedItem()?.value ?? 0);
@@ -68,15 +68,17 @@ export async function preview(ctx: ExtensionCommandContext, roots: Branch[], dis
       },
       invalidate() { container.invalidate(); detail?.invalidate(); },
       handleInput(data: string) {
-        if (detail) detail.handleInput(data);
-        else if (data === " ") {
+        if (detailText !== undefined) {
+          if (keys.matches(data, "tui.select.cancel")) { detail = undefined; detailText = undefined; }
+          else detail?.handleInput(data);
+        } else if (matchesKey(data, "space")) {
           const row = current();
           if (row && !row.inherited) {
             const index = disabled.findIndex((item) => exclusionKey(item) === exclusionKey(row.node.exclusion));
             if (index >= 0) disabled.splice(index, 1); else disabled.push(row.node.exclusion);
             save(); rebuild();
           }
-        } else if (data === "v") {
+        } else if (matchesKey(data, "v")) {
           const row = current();
           if (row) {
             detailText = normalizedBranch(row.node);

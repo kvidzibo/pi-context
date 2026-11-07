@@ -119,11 +119,22 @@ test("startup branches filter only exact source matches and persist across reque
   assert.deepEqual(filterStartup([system], [tool.exclusion])[0].toolsAdded, []);
   assert.ok(branches(messages).every((node) => !node.raw.includes('"role":"user"')));
 
+  const startupMessage = { role: "custom", customType: "early", content: "Startup-only text\n", timestamp: 1 };
+  const withStartup = [system, startupMessage, messages[1], startupMessage];
+  const customNode = branches(withStartup).find((node) => node.source === "message:early")!;
+  assert.ok(customNode);
+  assert.deepEqual(filterStartup(withStartup, [customNode.exclusion]), [system, messages[1], startupMessage], "only pre-user custom messages are filtered; empty messages are omitted");
+  const later = { ...startupMessage, timestamp: 2 };
+  assert.deepEqual(filterStartup([system, later], [customNode.exclusion], [system, startupMessage]), [system, later], "compaction cannot turn a later custom message into startup context");
+  const mixed = { ...startupMessage, content: [{ type: "text", text: "Startup-only text\n" }, { type: "image", data: "unchanged" }] };
+  const filteredMixed = filterStartup([mixed], [customNode.exclusion]);
+  assert.deepEqual(filteredMixed[0].content, [{ type: "text", text: "" }, { type: "image", data: "unchanged" }]);
+
   const app = setup(directory);
   await app.emit("session_start");
   await app.emit("context_with_system", { messages });
   app.choose(3);
-  app.previewKeys("\r", " ", "\x1b");
+  app.previewKeys("\r", "\x1b[32u", "\x1b[118u", "\x1b");
   await app.command();
   assert.match(app.menus.join("\n"), /\[off\]/);
   assert.equal((await app.emit("context_with_system", { messages })).messages[0].sections.project_context, "");

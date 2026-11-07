@@ -5,6 +5,8 @@ import type { Exclusion } from "./preferences.ts";
 
 export interface StartupMessage {
   role: string;
+  customType?: string;
+  timestamp?: number;
   content?: unknown;
   sections?: Record<string, string | null>;
   toolsAdded?: { name: string }[];
@@ -111,12 +113,15 @@ function promptParts(message: StartupMessage): string[] {
   return [content, ...Object.values(message.sections ?? {}).filter((text): text is string => text !== null)].filter(Boolean);
 }
 
+const messageSource = (message: StartupMessage) => message.role === "custom" ? `message:${message.customType ?? "custom"}` : "prompt";
+
 export function branches(messages: StartupMessage[]): Branch[] {
   const result: Branch[] = [];
   for (const message of messages) {
-    if (message.role !== "system") break;
+    if (message.role === "user") break;
+    if (message.role !== "system" && message.role !== "custom") continue;
     const text = promptParts(message).join("\n\n");
-    if (text) result.push(textBranch(text, "prompt", "system:"));
+    if (text) result.push(textBranch(text, messageSource(message), message.role === "system" ? "system:" : `message: ${quote(message.customType ?? "custom")}`));
     for (const tool of message.toolsAdded ?? []) {
       const raw = JSON.stringify(tool);
       const exclusion = { source: `tool:${tool.name}`, text: raw, occurrence: 0, count: 1 };
@@ -131,13 +136,17 @@ export function normalizedBranch(node: Branch): string {
   return stringify(normalize(node.raw), { lineWidth: 0, blockQuote: "literal" });
 }
 
-/** Apply only exact branch matches, never user/assistant/tool-result content. */
-export function filterStartup<T extends StartupMessage>(messages: T[], disabled: Exclusion[]): T[] {
+/** Apply exact startup matches and system patches, never user/assistant/tool-result content. */
+export function filterStartup<T extends StartupMessage>(messages: T[], disabled: Exclusion[], startup?: StartupMessage[]): T[] {
   if (!disabled.length) return messages;
   const keys = new Set(disabled.map(exclusionKey));
-  return messages.map((message) => {
-    if (message.role !== "system") return message;
-    const root = textBranch(promptParts(message).join("\n\n"));
+  let beforeUser = true;
+  return messages.flatMap((message) => {
+    if (message.role === "user") beforeUser = false;
+    const initialCustom = beforeUser && message.role === "custom" && (!startup || startup.some((initial) =>
+      initial.role === "custom" && initial.customType === message.customType && initial.timestamp === message.timestamp));
+    if (message.role !== "system" && !initialCustom) return message;
+    const root = textBranch(promptParts(message).join("\n\n"), messageSource(message));
     const ranges: [number, number][] = [];
     function visit(node: Branch, start: number) {
       if (keys.has(exclusionKey(node.exclusion))) { ranges.push([start, start + node.raw.length]); return; }
@@ -150,10 +159,10 @@ export function filterStartup<T extends StartupMessage>(messages: T[], disabled:
     }
     visit(root, 0);
     let offset = 0;
-    const filter = (text: string) => {
-      if (!text) return text;
+    const filter = (text: string, separator = 2, keepEmpty = false) => {
+      if (!text && !keepEmpty) return text;
       const start = offset;
-      offset += text.length + 2;
+      offset += text.length + separator;
       let cursor = 0;
       let output = "";
       for (const [from, to] of ranges) {
@@ -163,9 +172,19 @@ export function filterStartup<T extends StartupMessage>(messages: T[], disabled:
       }
       return output + text.slice(cursor);
     };
+    let content = message.content;
+    if (typeof content === "string") content = filter(content);
+    else if (Array.isArray(content)) {
+      const textBlocks = content.filter((block) => block.type === "text");
+      if (textBlocks.map((block) => block.text).join("\n")) {
+        let index = 0;
+        content = content.map((block) => block.type === "text"
+          ? { ...block, text: filter(block.text, ++index === textBlocks.length ? 2 : 1, true) } : block);
+      }
+    }
+    if (message.role === "custom" && (content === "" || (Array.isArray(content) && content.every((block) => block.type === "text" && !block.text)))) return [];
     return { ...message,
-      content: typeof message.content === "string" ? filter(message.content) : Array.isArray(message.content)
-        ? filter(message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")) : message.content,
+      content,
       ...(message.sections ? { sections: Object.fromEntries(Object.entries(message.sections).map(([name, text]) =>
         [name, text === null ? null : filter(text)])) } : {}),
       ...(message.toolsAdded ? { toolsAdded: message.toolsAdded.filter((tool) => !keys.has(exclusionKey({ source: `tool:${tool.name}`, text: JSON.stringify(tool), occurrence: 0, count: 1 }))) } : {}),

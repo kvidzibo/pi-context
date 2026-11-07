@@ -47,7 +47,7 @@ export function startupControls(pi: ExtensionAPI) {
   });
   pi.on("context_with_system", (event) => {
     if (!snapshot) {
-      const first = event.messages.findIndex((message) => message.role !== "system");
+      const first = event.messages.findIndex((message) => message.role === "user");
       snapshot = structuredClone(event.messages.slice(0, first < 0 ? undefined : first));
       if (forcedOriginal !== undefined && snapshot[0]) {
         snapshot[0].content = forcedOriginal;
@@ -55,7 +55,7 @@ export function startupControls(pi: ExtensionAPI) {
       }
       pi.appendEntry(SNAPSHOT, snapshot);
     }
-    return { messages: filterStartup(event.messages, disabled) };
+    return { messages: filterStartup(event.messages, disabled, snapshot) };
   });
   pi.registerEntryRenderer<{ report: string }>("context-analysis", (entry, _options, theme) =>
     new Text(theme.fg("dim", (entry.data?.report ?? "").split("\n").map(terminalSafe).join("\n")), 1, 0));
@@ -66,11 +66,12 @@ export function startupControls(pi: ExtensionAPI) {
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === "message" && entry.message.role === "user") break;
       if (entry.type === "message" && entry.message.role === "system") messages.push(entry.message);
+      if (entry.type === "custom_message") messages.push({ role: "custom", customType: entry.customType, content: entry.content, timestamp: new Date(entry.timestamp).getTime() });
     }
-    if (messages.length) return messages;
+    if (messages.some((message) => message.role === "system")) return messages;
     const active = new Set(pi.getActiveTools());
     return [{ role: "system", content: ctx.getSystemPrompt(), toolsAdded: pi.getAllTools().filter((tool) => active.has(tool.name))
-      .map(({ name, description, parameters }) => ({ name, description, parameters })) }];
+      .map(({ name, description, parameters }) => ({ name, description, parameters })) }, ...messages];
   }
   return {
     items(): SettingItem[] {
