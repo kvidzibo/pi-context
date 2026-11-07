@@ -115,13 +115,45 @@ function promptParts(message: StartupMessage): string[] {
 
 const messageSource = (message: StartupMessage) => message.role === "custom" ? `message:${message.customType ?? "custom"}` : "prompt";
 
+function prefix(messages: StartupMessage[]): StartupMessage[] {
+  const end = messages.findIndex((message) => message.role === "user");
+  return messages.slice(0, end < 0 ? undefined : end);
+}
+
+function customTrees(messages: StartupMessage[]): Map<StartupMessage, Branch> {
+  const roots = new Map<StartupMessage, Branch>();
+  for (const message of prefix(messages)) {
+    if (message.role !== "custom") continue;
+    const source = messageSource(message);
+    roots.set(message, textBranch(promptParts(message).join("\n\n"), source, `message: ${quote(message.customType ?? "custom")}`));
+  }
+  const all = [...roots.values()];
+  for (let index = 0; index < all.length; index++) {
+    const root = all[index];
+    for (const node of flatten([root]).filter((node) => node.source === root.source)) {
+      let earlier = 0;
+      let count = 0;
+      for (let other = 0; other < all.length; other++) {
+        if (all[other].source !== root.source) continue;
+        const matches = positions(all[other].raw, node.raw).length;
+        count += matches;
+        if (other < index) earlier += matches;
+      }
+      node.exclusion = { ...node.exclusion, occurrence: earlier + node.exclusion.occurrence, count };
+      node.id = hash(exclusionKey(node.exclusion));
+    }
+  }
+  return roots;
+}
+
 export function branches(messages: StartupMessage[]): Branch[] {
   const result: Branch[] = [];
+  const custom = customTrees(messages);
   for (const message of messages) {
     if (message.role === "user") break;
     if (message.role !== "system" && message.role !== "custom") continue;
     const text = promptParts(message).join("\n\n");
-    if (text) result.push(textBranch(text, messageSource(message), message.role === "system" ? "system:" : `message: ${quote(message.customType ?? "custom")}`));
+    if (text) result.push(custom.get(message) ?? textBranch(text, "prompt", "system:"));
     for (const tool of message.toolsAdded ?? []) {
       const raw = JSON.stringify(tool);
       const exclusion = { source: `tool:${tool.name}`, text: raw, occurrence: 0, count: 1 };
@@ -140,13 +172,14 @@ export function normalizedBranch(node: Branch): string {
 export function filterStartup<T extends StartupMessage>(messages: T[], disabled: Exclusion[], startup?: StartupMessage[]): T[] {
   if (!disabled.length) return messages;
   const keys = new Set(disabled.map(exclusionKey));
+  const custom = customTrees(startup ? prefix(messages).filter((message) => startup.some((initial) =>
+    initial.role === "custom" && initial.customType === message.customType && initial.timestamp === message.timestamp)) : messages);
   let beforeUser = true;
   return messages.flatMap((message) => {
     if (message.role === "user") beforeUser = false;
-    const initialCustom = beforeUser && message.role === "custom" && (!startup || startup.some((initial) =>
-      initial.role === "custom" && initial.customType === message.customType && initial.timestamp === message.timestamp));
-    if (message.role !== "system" && !initialCustom) return message;
-    const root = textBranch(promptParts(message).join("\n\n"), messageSource(message));
+    const customRoot = beforeUser ? custom.get(message) : undefined;
+    if (message.role !== "system" && !customRoot) return message;
+    const root = customRoot ?? textBranch(promptParts(message).join("\n\n"));
     const ranges: [number, number][] = [];
     function visit(node: Branch, start: number) {
       if (keys.has(exclusionKey(node.exclusion))) { ranges.push([start, start + node.raw.length]); return; }

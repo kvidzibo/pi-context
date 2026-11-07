@@ -77,7 +77,9 @@ function setup(agentDir = join(tmpdir(), `pi-context-settings-${Math.random()}`)
     },
   } as unknown as ExtensionCommandContext;
   return {
-    ctx, entries, menus, notices, prefills, requests,
+    ctx, menus, notices, prefills, requests,
+    sessionEntries: entries,
+    get entries() { return entries.filter((entry) => entry.type !== "context-controls"); },
     previewKeys: (...keys: string[]) => previewKeys.push(...keys),
     confirm: (value: boolean) => { confirm = value; },
     choose: (...choices: Array<number | undefined>) => selections.push(...choices),
@@ -120,6 +122,12 @@ test("startup branches filter only exact source matches and persist across reque
   assert.ok(branches(messages).every((node) => !node.raw.includes('"role":"user"')));
 
   const startupMessage = { role: "custom", customType: "early", content: "Startup-only text\n", timestamp: 1 };
+  const duplicate = { ...startupMessage, timestamp: 2 };
+  const duplicatesBeforeUser = [system, startupMessage, duplicate, messages[1]];
+  const customDuplicates = branches(duplicatesBeforeUser).filter((node) => node.source === "message:early");
+  assert.notEqual(customDuplicates[0].id, customDuplicates[1].id);
+  assert.deepEqual(customDuplicates.map((node) => [node.exclusion.occurrence, node.exclusion.count]), [[0, 2], [1, 2]]);
+  assert.deepEqual(filterStartup(duplicatesBeforeUser, [customDuplicates[1].exclusion]), [system, startupMessage, messages[1]]);
   const withStartup = [system, startupMessage, messages[1], startupMessage];
   const customNode = branches(withStartup).find((node) => node.source === "message:early")!;
   assert.ok(customNode);
@@ -138,7 +146,7 @@ test("startup branches filter only exact source matches and persist across reque
   await app.command();
   assert.match(app.menus.join("\n"), /\[off\]/);
   assert.equal((await app.emit("context_with_system", { messages })).messages[0].sections.project_context, "");
-  const resumed = setup(directory, app.entries);
+  const resumed = setup(directory, app.sessionEntries);
   await resumed.emit("session_start");
   assert.equal((await resumed.emit("context_with_system", { messages })).messages[0].sections.project_context, "");
   resumed.choose(4);
@@ -152,6 +160,14 @@ test("startup branches filter only exact source matches and persist across reque
   next.previewKeys(" ", "\x1b");
   await next.command();
   assert.deepEqual((await next.emit("context_with_system", { messages })).messages, messages, "session can re-enable a global exclusion");
+
+  const untouchedDirectory = join(directory, "untouched");
+  const untouched = setup(untouchedDirectory);
+  await untouched.emit("session_start");
+  await savePreferences(join(untouchedDirectory, "context-settings.json"), [exclusion]);
+  const untouchedReloaded = setup(untouchedDirectory, untouched.sessionEntries);
+  await untouchedReloaded.emit("session_start");
+  assert.deepEqual((await untouchedReloaded.emit("context_with_system", { messages })).messages, messages, "existing untouched sessions retain the choices inherited at creation");
 
   await savePreferences(settings, [exclusion, exclusion]);
   assert.equal((await loadPreferences(settings)).disabled.length, 2);

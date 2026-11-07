@@ -26,15 +26,20 @@ export function startupControls(pi: ExtensionAPI) {
     forcedOriginal = undefined;
     try { disabled = (await loadPreferences(settingsPath)).disabled; }
     catch (error) { warn(ctx, error); }
+    let restored = false;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom") continue;
       if (entry.customType === STATE) {
         const data = entry.data as { disabled?: unknown; expanded?: unknown } | undefined;
-        if (Array.isArray(data?.disabled) && data.disabled.every(isExclusion)) disabled = structuredClone(data.disabled);
+        if (Array.isArray(data?.disabled) && data.disabled.every(isExclusion)) {
+          disabled = structuredClone(data.disabled);
+          restored = true;
+        }
         if (Array.isArray(data?.expanded) && data.expanded.every((value) => typeof value === "string")) expanded = new Set(data.expanded);
       }
       if (entry.customType === SNAPSHOT && Array.isArray(entry.data)) snapshot = structuredClone(entry.data);
     }
+    if (!restored) persist();
   }
   pi.on("session_start", async (_event, ctx) => restore(ctx));
   pi.on("session_tree", async (_event, ctx) => restore(ctx));
